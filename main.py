@@ -116,7 +116,7 @@ while True:
         mar = calculate_mar(mouth)
 
         cv2.polylines(frame, [mouth], True, (0, 0, 255), 1)
-        
+
         # 하품 감지
         if mar > MAR_THRESHOLD:
             yawn_frame_counter += 1
