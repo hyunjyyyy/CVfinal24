@@ -1,136 +1,163 @@
+import time
 import cv2
 import dlib
 import numpy as np
-from sleep_detect import calculate_ear, calculate_mar, detect_blink_and_yawn
-import time
+from ultralytics import YOLO
+from sleep_detect import SleepDetector
 
-# Dlib 얼굴 탐지 및 랜드마크 예측기 로드
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
+# 초기화
+thresholds = {
+    'EAR_THRESHOLD': 0.2,  # 기본값 (캘리브레이션으로 수정)
+    'MAR_THRESHOLD': 0.5,  # 기본값
+    'CONSECUTIVE_FRAMES': 3
+}
 
-# 눈 및 입 랜드마크 인덱스
 LEFT_EYE_POINTS = list(range(36, 42))
 RIGHT_EYE_POINTS = list(range(42, 48))
 MOUTH_POINTS = list(range(48, 68))
 
-# 초기 thresholds 설정
-thresholds = {
-    'EAR_THRESHOLD': 0.2, 
-    'MAR_THRESHOLD': 0.5,  
-    'CONSECUTIVE_FRAMES': 3,
-    'EYE_CLOSED_WARNING_FRAMES': 60,
-    'BLINK_COUNT_WARNING_THRESHOLD': 5
-}
+# SleepDetector 클래스 초기화
+sleep_detector = SleepDetector(thresholds)
 
-# 상태 변수 초기화
-state = {
-    "left_blink_count": 0,
-    "right_blink_count": 0,
-    "yawn_count": 0,
-    "left_eye_frames": 0,
-    "right_eye_frames": 0,
-    "eye_closed_frames": 0,
-    "yawn_frames": 0,
-    "eye_closed_warning_duration": 0,
-    "blink_warning_duration": 0,
-    "yawn_warning_duration": 0
-}
+# YOLO 및 Dlib 초기화
+model = YOLO('yolov8_best_4.pt')
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-# 웹캠 열기
-cap = cv2.VideoCapture(0)
 
-# **초기 5초 동안 사용자 EAR 평균값 계산**
-print("Calibrating... Please keep your eyes open naturally for 5 seconds.")
-start_time = time.time()
-ear_values = []
+def calibrate_threshold(cap, detector, predictor, sleep_detector, duration=5):
+    """EAR 및 MAR 임계값을 동시에 캘리브레이션하는 함수"""
+    ear_values = []
+    mar_values = []
+    start_time = time.time()
 
-while time.time() - start_time < 5:  # 5초 동안 캘리브레이션
-    ret, frame = cap.read()
-    if not ret:
-        break
+    while time.time() - start_time < duration:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray)
+
+        for face in faces:
+            landmarks = predictor(gray, face)
+
+            # 왼쪽 및 오른쪽 눈 EAR 계산
+            left_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in LEFT_EYE_POINTS])
+            right_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in RIGHT_EYE_POINTS])
+
+            left_ear = sleep_detector.calculate_ear(left_eye)
+            right_ear = sleep_detector.calculate_ear(right_eye)
+
+            avg_ear = (left_ear + right_ear) / 2.0
+            ear_values.append(avg_ear)
+
+            # 입 (MOUTH) MAR 계산
+            mouth = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in MOUTH_POINTS])
+            mar = sleep_detector.calculate_mar(mouth)
+            mar_values.append(mar)
+
+        # 캘리브레이션 메시지 출력
+        cv2.putText(frame, "Calibrating... Keep eyes open and mouth closed.", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.imshow("Calibration", frame)
+        cv2.waitKey(1)
+
+    # EAR 임계값 설정
+    if ear_values:
+        new_ear_threshold = np.mean(ear_values) * 0.7  # 비율을 0.7로 설정하여 EAR 임계값 조정
+        sleep_detector.set_ear_threshold(new_ear_threshold)
+        print(f"Calibration complete. EAR_THRESHOLD set to: {new_ear_threshold:.2f}")
+
+    # MAR 임계값 설정
+    if mar_values:
+        new_mar_threshold = np.mean(mar_values) * 1.5  # 비율을 1.5배로 설정하여 MAR 임계값 조정
+        sleep_detector.set_mar_threshold(new_mar_threshold)
+        print(f"MAR Calibration complete. MAR_THRESHOLD set to: {new_mar_threshold:.2f}")
+
+    # 캘리브레이션 창 닫기
+    cv2.destroyWindow("Calibration")
+
+
+def process_frame(frame, detector, predictor, sleep_detector, model, show_values=True):
+    """프레임 처리 함수"""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = detector(gray)
 
     for face in faces:
         landmarks = predictor(gray, face)
 
-        # 눈 좌표 가져오기
-        left_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in LEFT_EYE_POINTS])
-        right_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in RIGHT_EYE_POINTS])
-
-        # EAR 계산 및 저장
-        left_ear = calculate_ear(left_eye)
-        right_ear = calculate_ear(right_eye)
-        avg_ear = (left_ear + right_ear) / 2.0
-        ear_values.append(avg_ear)
-
-    cv2.putText(frame, "Calibrating... Keep eyes open.", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.imshow("Calibration", frame)
-    cv2.waitKey(1)
-
-# 사용자 평균 EAR 값을 기준으로 새로운 임계값 설정
-if ear_values:
-    thresholds['EAR_THRESHOLD'] = np.mean(ear_values) * 0.75  # 평균 EAR의 75%를 임계값으로 설정
-    print(f"Calibration complete. EAR_THRESHOLD set to: {thresholds['EAR_THRESHOLD']:.2f}")
-
-cv2.destroyAllWindows()
-
-# 메인 루프 시작
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = detector(gray)
-
-    for face in faces:
-        landmarks = predictor(gray, face)
-
-        # 눈과 입 좌표 가져오기
+        # 눈 및 입 좌표 계산
         left_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in LEFT_EYE_POINTS])
         right_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in RIGHT_EYE_POINTS])
         mouth = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in MOUTH_POINTS])
 
         # EAR 및 MAR 계산
-        left_ear = calculate_ear(left_eye)
-        right_ear = calculate_ear(right_eye)
-        mar = calculate_mar(mouth)
+        left_ear = sleep_detector.calculate_ear(left_eye)
+        right_ear = sleep_detector.calculate_ear(right_eye)
+        mar = sleep_detector.calculate_mar(mouth)
 
-        # 눈 및 입 영역 강조 표시
-        cv2.polylines(frame, [left_eye], True, (0, 255, 0), 2)  # 왼쪽 눈
-        cv2.polylines(frame, [right_eye], True, (0, 255, 0), 2)  # 오른쪽 눈
-        cv2.polylines(frame, [mouth], True, (0, 0, 255), 2)  # 입
+        # EAR과 MAR의 평균 값 계산
+        avg_ear = (left_ear + right_ear) / 2.0
 
-        # EAR 및 MAR 값 표시
-        cv2.putText(frame, f"Left EAR: {left_ear:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(frame, f"Right EAR: {right_ear:.2f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(frame, f"MAR: {mar:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        # 눈 및 입 표시
+        cv2.polylines(frame, [left_eye], True, (0, 255, 255), 1)
+        cv2.polylines(frame, [right_eye], True, (0, 255, 255), 1)
+        cv2.polylines(frame, [mouth], True, (255, 0, 255), 1)
 
-        # 깜빡임 및 하품 감지
-        eye_closed_warning, blink_warning, yawn_warning = detect_blink_and_yawn(
-            left_ear, right_ear, mar, thresholds, state
-        )
+        # 경고 감지
+        warnings = sleep_detector.detect(left_ear, right_ear, mar)
 
-        # 경고 메시지 표시
-        if eye_closed_warning:
-            cv2.putText(frame, eye_closed_warning, (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-        if blink_warning:
-            cv2.putText(frame, blink_warning, (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        if yawn_warning:
-            cv2.putText(frame, yawn_warning, (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+        # 경고 메시지 출력
+        for i, (key, warning) in enumerate(warnings.items()):
+            if warning:
+                cv2.putText(frame, warning, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        # 깜빡임 및 하품 카운트 출력
-        cv2.putText(frame, f"Left Blinks: {state['left_blink_count']}", (10, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-        cv2.putText(frame, f"Right Blinks: {state['right_blink_count']}", (10, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-        cv2.putText(frame, f"Yawns: {state['yawn_count']}", (10, 330), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        # EAR 및 MAR 값 화면에 표시
+        if show_values:
+            cv2.putText(frame, f"EAR: {avg_ear:.2f}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(frame, f"MAR: {mar:.2f}", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-    # 화면 출력
-    cv2.imshow("Driver Safety System", frame)
+    # YOLO 객체 탐지
+    results = model(frame, stream=True)
+    for result in results:
+        for box, cls_id in zip(result.boxes, result.boxes.cls):
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = box.conf[0]
+            cls_id = int(cls_id)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+            if conf > 0.5:
+                class_name = model.names[cls_id] if cls_id in model.names else "Unknown"
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, f"{class_name} {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-cap.release()
-cv2.destroyAllWindows()
+    return frame
+
+
+def main():
+    cap = cv2.VideoCapture(0)
+    calibrate_threshold(cap, detector, predictor, sleep_detector, duration=5)
+
+    show_values = True  # EAR과 MAR 값을 표시할지 여부
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # 프레임 처리
+        frame = process_frame(frame, detector, predictor, sleep_detector, model, show_values)
+        cv2.imshow("Driver Safety System", frame)
+
+        # 'i' 키로 EAR, MAR 값 표시 토글
+        if cv2.waitKey(1) & 0xFF == ord('i'):
+            show_values = not show_values
+
+        # 종료 조건
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
