@@ -13,7 +13,7 @@ LEFT_EYE_POINTS = list(range(36, 42))
 RIGHT_EYE_POINTS = list(range(42, 48))
 MOUTH_POINTS = list(range(48, 68))
 
-# 초기 threshold 설정
+# 초기 thresholds 설정
 thresholds = {
     'EAR_THRESHOLD': 0.2, 
     'MAR_THRESHOLD': 0.5,  
@@ -54,7 +54,7 @@ while time.time() - start_time < 5:  # 5초 동안 캘리브레이션
 
     for face in faces:
         landmarks = predictor(gray, face)
-        
+
         # 눈 좌표 가져오기
         left_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in LEFT_EYE_POINTS])
         right_eye = np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in RIGHT_EYE_POINTS])
@@ -98,12 +98,22 @@ while True:
         right_ear = calculate_ear(right_eye)
         mar = calculate_mar(mouth)
 
+        # 눈 및 입 영역 강조 표시
+        cv2.polylines(frame, [left_eye], True, (0, 255, 0), 2)  # 왼쪽 눈
+        cv2.polylines(frame, [right_eye], True, (0, 255, 0), 2)  # 오른쪽 눈
+        cv2.polylines(frame, [mouth], True, (0, 0, 255), 2)  # 입
+
+        # EAR 및 MAR 값 표시
+        cv2.putText(frame, f"Left EAR: {left_ear:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(frame, f"Right EAR: {right_ear:.2f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(frame, f"MAR: {mar:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
         # 깜빡임 및 하품 감지
         eye_closed_warning, blink_warning, yawn_warning = detect_blink_and_yawn(
             left_ear, right_ear, mar, thresholds, state
         )
 
-        # 화면에 경고 메시지 표시
+        # 경고 메시지 표시
         if eye_closed_warning:
             cv2.putText(frame, eye_closed_warning, (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         if blink_warning:
@@ -111,10 +121,10 @@ while True:
         if yawn_warning:
             cv2.putText(frame, yawn_warning, (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
 
-        # 결과 화면에 표시
-        cv2.putText(frame, f"Left Blinks: {state['left_blink_count']}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-        cv2.putText(frame, f"Right Blinks: {state['right_blink_count']}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-        cv2.putText(frame, f"Yawns: {state['yawn_count']}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        # 깜빡임 및 하품 카운트 출력
+        cv2.putText(frame, f"Left Blinks: {state['left_blink_count']}", (10, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(frame, f"Right Blinks: {state['right_blink_count']}", (10, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(frame, f"Yawns: {state['yawn_count']}", (10, 330), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
     # 화면 출력
     cv2.imshow("Driver Safety System", frame)
